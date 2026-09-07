@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Adaptive Metronome</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --border: #2a2e38;
+    --border-strong: #3a3f4b;
+    --text: #f2f3f5;
+    --text-secondary: #a8adb8;
+    --text-muted: #6b7280;
+    --accent: #4f8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 60px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+  .wrap { width: 100%; max-width: 560px; }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 20px;
+    text-align: center;
+  }
+  .controls-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  button {
+    background: var(--card);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover { background: #1f232c; }
+  button:active { transform: scale(0.98); }
+  #playBtn { min-width: 100px; font-weight: 500; }
+  .slider-group { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 180px; }
+  .slider-group label { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
+  input[type="range"] { flex: 1; accent-color: var(--accent); }
+  select {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+  #bpmOut { font-size: 14px; font-weight: 500; min-width: 64px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+  .chip {
+    padding: 6px 14px;
+    font-size: 13px;
+    border-radius: 999px;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    background: transparent;
+    cursor: pointer;
+  }
+  .chip.off { border-color: var(--border-strong); color: var(--text-secondary); }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px;
+    text-align: center;
+  }
+  .label-sm { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+  #meterName { font-size: 28px; font-weight: 600; margin-bottom: 4px; }
+  #meterGroups { font-size: 13px; color: var(--text-muted); margin-bottom: 18px; }
+  #dots { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; min-height: 20px; }
+  .beatdot { border-radius: 50%; transition: outline 0.06s; }
+  .status-row { display: flex; justify-content: center; gap: 28px; font-size: 13px; color: var(--text-secondary); }
+  .status-row b { color: var(--text); font-weight: 600; }
+  #log { margin-top: 14px; font-size: 12px; color: var(--text-muted); text-align: center; min-height: 16px; }
+  footer { text-align: center; margin-top: 30px; font-size: 12px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Adaptive metronome</h1>
+
+  <div class="controls-row">
+    <button id="playBtn">▶ Play</button>
+    <div class="slider-group">
+      <label for="bpmSlider">Tempo</label>
+      <input type="range" id="bpmSlider" min="50" max="200" step="1" value="100" />
+      <span id="bpmOut">100 bpm</span>
+    </div>
+    <select id="difficulty">
+      <option value="predictable">Show changes ahead</option>
+      <option value="surprise">Hide changes (surprise)</option>
+    </select>
+  </div>
+
+  <div class="chips" id="meterChips"></div>
+
+  <div class="card">
+    <div class="label-sm">Current meter</div>
+    <div id="meterName">4/4</div>
+    <div id="meterGroups">2 + 2 + 2 + 2</div>
+    <div id="dots"></div>
+    <div class="status-row">
+      <span>Bar <b id="barOut">1</b> / <b id="barTotalOut">4</b></span>
+      <span>Next change: <b id="nextOut">-</b></span>
+    </div>
+  </div>
+
+  <div id="log"></div>
+
+  <footer>Pulse-based metric modulation prototype &middot; no audio input, rules only</footer>
+</div>
+
+<script>
+const METERS = [
+  { name: '4/4', groups: [2, 2, 2, 2] },
+  { name: '3/4', groups: [2, 2, 2] },
+  { name: '6/8', groups: [3, 3] },
+  { name: '5/8', groups: [3, 2] },
+  { name: '7/8', groups: [2, 2, 3] },
+  { name: '9/8', groups: [2, 2, 2, 3] }
+];
+
+let enabled = new Set(METERS.map(m => m.name));
+const chipsEl = document.getElementById('meterChips');
+METERS.forEach(m => {
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.textContent = m.name;
+  b.onclick = () => {
+    const isOn = !b.classList.contains('off');
+    if (isOn && enabled.size === 1) return;
+    b.classList.toggle('off');
+    if (isOn) enabled.delete(m.name); else enabled.add(m.name);
+  };
+  chipsEl.appendChild(b);
+});
+
+let audioCtx = null;
+let isPlaying = false;
+let nextNoteTime = 0;
+let schedulerId = null;
+let baseBpm = 100;
+let pulseInBar = 0;
+let barInSegment = 0;
+let segment = null;
+let upcoming = null;
+let difficulty = 'predictable';
+
+function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+
+function makeSegment(startBpm) {
+  const pool = METERS.filter(m => enabled.has(m.name));
+  const meter = pool[randInt(0, pool.length - 1)];
+  const bars = randInt(2, 6);
+  let endBpm = startBpm;
+  if (Math.random() < 0.45) {
+    const delta = randInt(10, 28) * (Math.random() < 0.5 ? -1 : 1);
+    endBpm = Math.max(55, Math.min(195, startBpm + delta));
+  }
+  return { meter, bars, startBpm, endBpm };
+}
+
+function totalPulses(m) { return m.groups.reduce((a, b) => a + b, 0); }
+
+function currentBpm() {
+  const totalP = totalPulses(segment.meter) * segment.bars;
+  const doneP = totalPulses(segment.meter) * barInSegment + pulseInBar;
+  const frac = totalP > 0 ? doneP / totalP : 0;
+  return segment.startBpm + (segment.endBpm - segment.startBpm) * frac;
+}
+
+function pulseDuration() { return 60 / currentBpm(); }
+
+function isAccent() {
+  let acc = 0;
+  for (const g of segment.meter.groups) {
+    if (pulseInBar === acc) return true;
+    acc += g;
+  }
+  return false;
+}
+
+function playClick(time, accent) {
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.frequency.value = accent ? 1100 : 720;
+  gain.gain.setValueAtTime(accent ? 0.35 : 0.2, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.06);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(time);
+  osc.stop(time + 0.07);
+}
+
+function renderStatic() {
+  document.getElementById('meterName').textContent = segment.meter.name;
+  document.getElementById('meterGroups').textContent = segment.meter.groups.join(' + ');
+  document.getElementById('barTotalOut').textContent = segment.bars;
+  const dotsEl = document.getElementById('dots');
+  dotsEl.innerHTML = '';
+  segment.meter.groups.forEach((g, gi) => {
+    for (let i = 0; i < g; i++) {
+      const d = document.createElement('div');
+      d.className = 'beatdot';
+      const size = i === 0 ? 14 : 9;
+      d.style.width = size + 'px';
+      d.style.height = size + 'px';
+      d.style.background = i === 0 ? '#e7e9ee' : '#3a3f4b';
+      d.style.marginLeft = i === 0 && gi > 0 ? '10px' : '0';
+      dotsEl.appendChild(d);
+    }
+  });
+  document.getElementById('nextOut').textContent = difficulty === 'predictable'
+    ? upcoming.meter.name + ' in ' + (segment.bars - barInSegment) + ' bar' + (segment.bars - barInSegment === 1 ? '' : 's')
+    : '?';
+}
+
+function highlightPulse() {
+  const dots = document.querySelectorAll('#dots .beatdot');
+  dots.forEach((d, i) => d.style.outline = i === pulseInBar ? '2px solid #4f8cff' : 'none');
+  document.getElementById('barOut').textContent = barInSegment + 1;
+  document.getElementById('bpmOut').textContent = Math.round(currentBpm()) + ' bpm';
+}
+
+function logTransition(from, to, bpm) {
+  document.getElementById('log').textContent = from + ' → ' + to + ' at ' + Math.round(bpm) + ' bpm';
+}
+
+function advance() {
+  nextNoteTime += pulseDuration();
+  pulseInBar++;
+  const tp = totalPulses(segment.meter);
+  if (pulseInBar >= tp) {
+    pulseInBar = 0;
+    barInSegment++;
+    if (barInSegment >= segment.bars) {
+      const prevName = segment.meter.name;
+      const endBpm = segment.endBpm;
+      segment = upcoming;
+      segment.startBpm = endBpm;
+      barInSegment = 0;
+      upcoming = makeSegment(segment.endBpm);
+      logTransition(prevName, segment.meter.name, segment.startBpm);
+      renderStatic();
+      return;
+    }
+    renderStatic();
+  }
+}
+
+function scheduler() {
+  while (nextNoteTime < audioCtx.currentTime + 0.1) {
+    const t = nextNoteTime;
+    const accent = isAccent();
+    playClick(t, accent);
+    const delay = Math.max(0, (t - audioCtx.currentTime) * 1000);
+    setTimeout(highlightPulse, delay);
+    advance();
+  }
+}
+
+document.getElementById('bpmSlider').addEventListener('input', (e) => {
+  baseBpm = parseInt(e.target.value, 10);
+  document.getElementById('bpmOut').textContent = baseBpm + ' bpm';
+  if (!isPlaying && segment) { segment.startBpm = baseBpm; segment.endBpm = baseBpm; }
+});
+
+document.getElementById('difficulty').addEventListener('change', (e) => {
+  difficulty = e.target.value;
+  if (segment) renderStatic();
+});
+
+document.getElementById('playBtn').addEventListener('click', () => {
+  if (!isPlaying) {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (!segment) {
+      segment = makeSegment(baseBpm);
+      upcoming = makeSegment(segment.endBpm);
+      pulseInBar = 0;
+      barInSegment = 0;
+      renderStatic();
+    }
+    nextNoteTime = audioCtx.currentTime + 0.05;
+    schedulerId = setInterval(scheduler, 25);
+    isPlaying = true;
+    document.getElementById('playBtn').textContent = '⏸ Pause';
+  } else {
+    clearInterval(schedulerId);
+    isPlaying = false;
+    document.getElementById('playBtn').textContent = '▶ Play';
+  }
+});
+</script>
+</body>
+</html>
